@@ -1,6 +1,6 @@
 # Bambu Monitor 🖨️
 
-A Raspberry Pi-based monitor for Bambu Lab A1 Mini printers with Telegram notifications and AMS filament tracking.
+A Raspberry Pi-based monitor for Bambu Lab printers with Telegram notifications and AMS filament tracking.
 
 ## Features
 - 📡 Bambu Cloud MQTT connection with auto-reconnect

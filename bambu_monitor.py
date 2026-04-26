@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bambu Lab A1 Mini — Print Monitor with Telegram Bot
+Bambu Lab Bambu Lab printer — Print Monitor with Telegram Bot
 
 Subscribes to the printer's MQTT feed and:
   - sends Telegram notifications on print start / finish / failure
@@ -15,8 +15,7 @@ Configuration:
   Edit the constants below (SERIAL, CLOUD_HOST, TELEGRAM_TOKEN, etc.)
   Run: python3 bambu_monitor.py
 
-Smart plug control and camera integration are intentionally removed from
-this public version.  Hook your own implementation into set_plug() below.
+Camera integration is intentionally removed from this public version.
 """
 
 import fcntl
@@ -46,11 +45,7 @@ CLOUD_HOST   = "us.mqtt.bambulab.com"   # or eu.mqtt.bambulab.com
 CLOUD_PORT   = 8883
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Printer states → plug ON
-PRINTING_STATES = {"RUNNING", "PREPARE"}
-# Printer states → plug OFF
-DONE_STATES     = {"FINISH", "FAILED"}
-# States from which the user can resume a print (not a new print session)
+PRINTING_STATES  = {"RUNNING", "PREPARE"}
 RESUMABLE_STATES = {"PAUSE", "FAILED"}
 
 # ── Bambu Cloud token cache ────────────────────────────────────────────────────
@@ -61,11 +56,8 @@ BAMBU_REFRESH_DAYS = 7           # try to refresh when < 7 days remain
 _bambu_token    = None
 _bambu_token_ts = 0.0
 
-# ── Track plug state ──────────────────────────────────────────────────────────
-_plug_state      = None   # True = on, False = off, None = unknown
 _printer_state   = None   # last known gcode_state string
 _manual_override = False  # True = manual override mode active
-_manual_plug_override = False  # True = user manually turned off plug during print; suppress auto-on
 _last_percent    = None   # last known print progress %
 _last_remaining  = None   # last known remaining time in minutes
 _last_remaining_update = None  # datetime when _last_remaining was last set
@@ -464,7 +456,7 @@ def fetch_weight_from_cloud(task_id: str) -> tuple:
                 total = float(hit.get("weight") or 0.0)
                 # raw_mappings: each entry has fields including:
                 #   ams          — 1-based *project* filament/extruder index (unique per entry)
-                #   amsId        — AMS unit index (often 0 for all entries on A1 Mini — NOT unique!)
+                #   amsId        — AMS unit index (often 0 for all entries on Bambu Lab printer — NOT unique!)
                 #   slotId       — slot index within AMS unit (often 0 for all entries — NOT unique!)
                 #   filamentType — e.g. "PLA", "PETG"
                 #   sourceColor  — RRGGBBAA hex (8 chars); strip alpha to get RRGGBB for AMS matching
@@ -659,7 +651,7 @@ def _wait_and_finish(result: str, end_time: datetime) -> None:
 
 def _finish_print(result: str, end_time: datetime = None) -> None:
     """Called when a print ends. Records the session to history and sends summary."""
-    global _print_start_time, _last_filament_used, _current_filename, _manual_plug_override
+    global _print_start_time, _last_filament_used, _current_filename
     if _print_start_time is None:
         return
 
@@ -792,8 +784,7 @@ def _finish_print(result: str, end_time: datetime = None) -> None:
 
     _print_start_time = None
     with _globals_lock:
-        _last_filament_used   = None
-        _manual_plug_override = False
+        _last_filament_used = None
     _current_filename = None
 
 
@@ -1010,11 +1001,9 @@ def filament_status_text() -> str:
 # ── State persistence ─────────────────────────────────────────────────────────
 
 def write_state() -> None:
-    plug_label    = {True: "ON", False: "OFF", None: "unknown"}[_plug_state]
     printer_label = _printer_state or "unknown"
     data = {
         "printer_state":     printer_label,
-        "plug_state":        plug_label,
         "updated":           datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "manual_override":   _manual_override,
         "percent":           _last_percent,
@@ -1037,7 +1026,7 @@ def write_state() -> None:
 
 
 def load_state_from_file() -> None:
-    global _printer_state, _plug_state, _last_percent, _last_remaining
+    global _printer_state, _last_percent, _last_remaining
     global _print_start_time, _manual_override, _current_filename
     global _milestone_sent
     global _last_remaining_update
@@ -1047,9 +1036,6 @@ def load_state_from_file() -> None:
 
         ps = data.get("printer_state")
         _printer_state  = ps if ps and ps != "unknown" else None
-
-        plug_str        = data.get("plug_state")
-        _plug_state     = True if plug_str == "ON" else (False if plug_str == "OFF" else None)
 
         _last_percent    = data.get("percent")
         _last_remaining  = data.get("remaining_minutes")
@@ -1150,34 +1136,6 @@ def bambu_login() -> str:
     return _bambu_token
 
 
-# ── Smart plug control ────────────────────────────────────────────────────────
-# Implement your own plug control here (Tuya, Home Assistant, MQTT, etc.)
-
-PLUG_OFF_DELAY = 5 * 60   # seconds to wait before turning plug off after print ends
-
-
-def _cancel_pending_off() -> None:
-    pass  # No-op — plug timers removed in public version
-
-
-def set_plug(on: bool) -> None:
-    """Control the smart plug.  Implement your own integration here.
-
-    Example integrations:
-      - Home Assistant REST API  (ha_set_switch)
-      - Tuya Cloud API           (tuya_plug.py)
-      - MQTT                     (publish to plug topic)
-      - Shelly / Tasmota HTTP
-    """
-    global _plug_state
-    if _plug_state == on:
-        return
-    label = "ON" if on else "OFF"
-    log(f"→ set_plug({label}) — implement your plug control here")
-    # TODO: add your plug control code here
-    # _plug_state = on
-    # write_state()
-
 
 # ── MQTT callbacks ────────────────────────────────────────────────────────────
 
@@ -1224,7 +1182,7 @@ def on_message(client, userdata, msg):
     global _conversation_state, _active_slots_this_print, _filament_used_snapshot
     global _slot_active_seconds, _current_slot_str, _current_slot_since
     global _current_task_id, _cloud_slot_weights, _cloud_slot_types, _ams_filament
-    global _hms_alert_sent, _subtask_name, _ten_min_alert_sent, _slot_update_buffer, _manual_plug_override
+    global _hms_alert_sent, _subtask_name, _ten_min_alert_sent, _slot_update_buffer
 
     try:
         payload = json.loads(msg.payload.decode())
@@ -1291,7 +1249,6 @@ def on_message(client, userdata, msg):
         write_state()
 
         if state in PRINTING_STATES and prev_state not in PRINTING_STATES:
-            _cancel_pending_off()
             # Clear stale confirm_slot_ dialog atomically — printer started printing before user responded
             with _state_lock:
                 if _conversation_state and _conversation_state.startswith("confirm_slot_"):
@@ -1317,7 +1274,6 @@ def on_message(client, userdata, msg):
                 _nozzle_last_target      = None
                 _last_percent = 0
                 _ten_min_alert_sent = False
-                _manual_plug_override = False   # reset so auto-plug works on new print
                 # Fetch planned weight from Bambu Cloud API in background
                 threading.Thread(target=_fetch_cloud_weight_async, daemon=True).start()
             elif is_resume:
@@ -1351,7 +1307,6 @@ def on_message(client, userdata, msg):
             _nozzle_alert_sent     = False
             _nozzle_reached_target = False
             _nozzle_last_target    = None
-            _cancel_pending_off()
             log("Print FINISH.")
 
         elif state == "FAILED":
@@ -1364,7 +1319,6 @@ def on_message(client, userdata, msg):
             _nozzle_alert_sent     = False
             _nozzle_reached_target = False
             _nozzle_last_target    = None
-            _cancel_pending_off()
             send_telegram("❌ ההדפסה נכשלה!")
             log("Print FAILED.")
 
@@ -1539,10 +1493,6 @@ def on_message(client, userdata, msg):
                 _hms_alert_sent = False
                 log("[HMS] Error cleared — recovery message sent.")
 
-    with _globals_lock:
-        _plug_override_now = _manual_plug_override
-    if state in PRINTING_STATES and not _plug_override_now:
-        set_plug(True)   # no-op until set_plug() is implemented
 
 
 # ── Telegram bot listener ─────────────────────────────────────────────────────
@@ -1698,12 +1648,11 @@ def _tg_get_updates(offset: int):
 
 
 def _handle_tg_command(text: str) -> None:
-    global _slot_update_buffer, _manual_plug_override
+    global _slot_update_buffer
     cmd = text.strip()
 
     if "סטטוס" in cmd:
         printer = _printer_state or "unknown"
-        plug    = {True: "דולק 🟢", False: "כבוי 🔴", None: "לא ידוע"}[_plug_state]
         label   = STATE_LABELS.get(printer, printer)
         lines   = ["📊 סטטוס מדפסת", "─" * 17, f"🖨️ סטטוס: {label}"]
         if _subtask_name:
@@ -1739,7 +1688,6 @@ def _handle_tg_command(text: str) -> None:
             nozzle_str = f"Nozzle: {_nozzle_temp:.0f}°C" if _nozzle_temp is not None else ""
             bed_str    = f"מיטה: {_bed_temp:.0f}°C" if _bed_temp is not None else ""
             lines.append(f"🌡️ {' | '.join(x for x in [nozzle_str, bed_str] if x)}")
-        lines.append(f"🔌 מתג: {plug}")
         # פילמנט: בזמן הדפסה — סלוטים פעילים; במנוחה — כל הסלוטים הטעונים
         d_fil = filament_load()
         if _printer_state in PRINTING_STATES:
@@ -1852,18 +1800,6 @@ def _handle_tg_command(text: str) -> None:
                 filament_line += f" (₪{month_cost:.2f})"
             lines.append(f"  {filament_line}")
         send_telegram("\n".join(lines))
-
-    elif "הדלק" in cmd:
-        set_plug(True)
-        with _globals_lock:
-            _manual_plug_override = False
-        send_telegram("🔌 הפקודה נשלחה")
-
-    elif "כבה" in cmd:
-        set_plug(False)
-        with _globals_lock:
-            _manual_plug_override = True
-        send_telegram("🔌 הפקודה נשלחה")
 
     elif "פילמנט" in cmd and not cmd.startswith("setup_slot_") and not cmd.startswith("sw_"):
         send_telegram(filament_status_text(), reply_markup=_filament_setup_keyboard())
